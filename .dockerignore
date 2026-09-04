@@ -1,0 +1,11 @@
+.ipynb_checkpoints/
+notebooks/
+data/
+reports/
+dashboard/
+tests/
+__pycache__/
+*.pyc
+.pytest_cache/
+README.md
+catboost_info/

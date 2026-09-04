@@ -139,6 +139,7 @@ with tab_individual:
         res_col2.metric("Churn Probability", f"{result['churn_probability']:.1%}")
         res_col3.markdown(
             f"**Risk Category:** :{risk_color(result['risk_category'])}[{result['risk_category']}]"
+            st.info(f"**Recommendation:** {result['recommendation']}")
         )
 
         # SHAP explanation for this specific customer -- loaded directly,
