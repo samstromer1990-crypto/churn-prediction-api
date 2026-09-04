@@ -1,6 +1,8 @@
 # Customer Churn Prediction System
 
-> **Status: Work in progress.** This README reflects what has been built and tested so far. Stages not yet complete (automated tests, Docker, live deployment) are listed explicitly at the bottom — they are not overstated as done.
+**Live API:** https://churn-prediction-api-qdn6.onrender.com/docs
+
+> Deployed on Render's free tier. The instance spins down after periods of inactivity, so the first request after a while may take 30-60 seconds to respond while it wakes up — this is a known tradeoff of free hosting, not a bug.
 
 ## Business Problem
 
@@ -65,40 +67,54 @@ Raw customer data
 │                  │─────►│ (dashboard/       │      │   *.json)            │
 │  loads model once│      │  streamlit_app.py)│      │  loaded at startup    │
 └─────────────────┘      └──────────────────┘      └─────────────────────┘
+       │
+       ▼
+┌─────────────────┐
+│  Docker image     │  → deployed to Render (free tier)
+│  (FastAPI only)   │
+└─────────────────┘
 ```
 
 - The **FastAPI backend** is the single source of truth for predictions — it loads the trained CatBoost model once at startup and serves all prediction logic.
 - The **Streamlit dashboard** calls the FastAPI backend over HTTP for actual predictions (rather than duplicating prediction logic), so the two can never drift out of sync. It loads the model directly only to compute live SHAP explanations for the dashboard, which the API does not currently expose.
 - **CatBoost consumes raw categorical columns directly** — there is no separate encoder object to keep synchronized between training and serving, which removes a common class of train/serve inconsistency bugs.
+- The **Docker image** packages only the FastAPI backend (not the dashboard) — this is the piece deployed live. The dashboard remains a local-only tool for now (see **Future Improvements**).
 
 ## Project Structure
 
 ```
 goal intern project_1/
 ├── app/
-│   ├── model_loader.py      # Loads model + metadata, validates consistency
-│   ├── predictor.py          # Prediction logic: probability, Yes/No, risk band
-│   ├── recommendations.py    # Rule-based business recommendations (see note below)
-│   ├── schemas.py             # Pydantic request/response models
-│   └── main.py                 # FastAPI app and all endpoints
+│   ├── model_loader.py        # Loads model + metadata, validates consistency
+│   ├── predictor.py            # Prediction logic: probability, Yes/No, risk band
+│   ├── recommendations.py      # Rule-based business recommendations (see note below)
+│   ├── schemas.py                # Pydantic request/response models
+│   └── main.py                     # FastAPI app and all endpoints
 ├── dashboard/
-│   └── streamlit_app.py       # Individual + batch prediction UI, SHAP explanations
+│   └── streamlit_app.py         # Individual + batch prediction UI, SHAP explanations
 ├── models/
 │   ├── catboost_churn_model.cbm
-│   └── model_metadata.json    # feature names, categorical columns, target classes
-├── churn_notebook_fixed.ipynb # Full ML workflow: cleaning through error analysis
-├── model_selection.py         # Standalone model comparison script
-├── model_catboost.py          # Standalone CatBoost-only comparison script
-├── tune_catboost.py            # Standalone hyperparameter tuning script
+│   └── model_metadata.json      # feature names, categorical columns, target classes
+├── tests/
+│   └── test_api.py                # Automated API test suite (pytest + TestClient)
+├── churn_notebook_fixed.ipynb   # Full ML workflow: cleaning through error analysis
+├── model_selection.py           # Standalone model comparison script
+├── model_catboost.py             # Standalone CatBoost-only comparison script
+├── tune_catboost.py               # Standalone hyperparameter tuning script
+├── Dockerfile                       # Builds the FastAPI backend container
+├── .dockerignore
+├── requirements.txt               # Full dependency list (local dev, incl. dashboard)
+├── requirements-api.txt          # Slim dependency list (Docker/deployed container only)
 └── WA_Fn-UseC_-Telco-Customer-Churn.csv
 ```
 
 ## API Documentation
 
-Interactive docs available at `http://127.0.0.1:8000/docs` once the server is running.
+Interactive docs: `/docs` — locally at `http://127.0.0.1:8000/docs`, or live at the [deployed URL](https://churn-prediction-api-qdn6.onrender.com/docs) above.
 
 | Endpoint | Method | Description |
 |---|---|---|
+| `/` | GET | Redirects to `/docs`. |
 | `/health` | GET | Confirms the API is running and the model loaded successfully. |
 | `/predict` | POST | Predicts churn for a single customer. Returns prediction, probability, risk category, and a recommendation. |
 | `/predict/batch` | POST | Predicts churn for a JSON list of customers in one request. |
@@ -113,7 +129,39 @@ The system attaches a short recommendation to each prediction (e.g. "recommend a
 
 Similarly, the **0.5 decision threshold** and the **Low (<30%) / Medium (30–60%) / High (>60%) risk bands** are reasonable defaults, not derived from an actual cost-of-false-negative vs. cost-of-false-positive analysis. Both should be revisited if real business figures become available.
 
-## How to Run Locally
+## Automated Testing
+
+12 automated tests (`tests/test_api.py`, run via `pytest`) cover:
+- Health check / model loading confirmation
+- Valid single prediction (shape and value-range checks)
+- Invalid input handling (missing fields, wrong types, out-of-range values) — confirmed to fail gracefully with `422`, not crash
+- Pydantic's default "extra fields are ignored" behavior
+- Batch prediction (multiple customers, and the empty-list edge case)
+- `/model-info` shape
+- CSV batch upload/download, including rejection of non-CSV files and CSVs missing required columns
+
+Run locally with:
+```bash
+python -m pytest tests/ -v
+```
+All 12 tests currently pass.
+
+## Running with Docker (recommended)
+
+The FastAPI backend is fully containerized. This is the easiest way for anyone to run the API without setting up a Python environment manually.
+
+```bash
+git clone https://github.com/samstromer1990-crypto/churn-prediction-api.git
+cd churn-prediction-api
+docker build -t churn-api .
+docker run -d -p 8000:8000 --name churn-api-container churn-api
+```
+
+Then visit `http://localhost:8000/docs`.
+
+The container uses `requirements-api.txt` (a slim dependency list containing only what the FastAPI backend needs) rather than the full `requirements.txt`, to keep the image lean — the dashboard's dependencies (`streamlit`, `shap`) aren't needed to serve predictions.
+
+## Running Locally Without Docker
 
 Requires two terminals running at the same time.
 
@@ -136,6 +184,15 @@ Then visit:
 
 **Note (Windows):** always use `python -m uvicorn ...` rather than a bare `uvicorn` command — on machines with multiple Python installations, the bare command can silently resolve to the wrong Python environment.
 
+## Deployment
+
+The FastAPI backend is deployed on **Render** (free tier):
+- Builds directly from the `Dockerfile` in this repo on every push to `main`
+- No cost, no credit card required
+- Tradeoff: the free instance spins down after ~15 minutes of inactivity; the next request triggers a cold start (30-60 seconds) before responding normally
+
+The Streamlit dashboard is not currently deployed live — it remains a local-only tool (see **Future Improvements**).
+
 ## Limitations
 
 - `gender` and `PaperlessBilling` were dropped from the feature set before EDA confirmed whether they had predictive value — a process gap, not a validated decision. `gender` is very likely safe to drop; `PaperlessBilling` was not checked before being dropped and may have mattered.
@@ -143,12 +200,12 @@ Then visit:
 - Precision (0.53) means close to half of customers flagged as at-risk are false alarms; the current 0.5 decision threshold has not been tuned against real retention-offer cost data.
 - The dataset lacks features that might explain "surprise" churn (support ticket history, satisfaction surveys, competitor pricing), which likely explains the model's specific blind spot.
 - Business recommendation rules and risk-band thresholds are heuristic placeholders, not derived from real business cost data (see above).
+- The free Render hosting tier means the live demo has a cold-start delay after inactivity — acceptable for a portfolio project, but not representative of production-grade hosting.
 
 ## Future Improvements / Remaining Work
 
-The following stages of the project roadmap are **not yet complete**:
-- **Automated tests** (API health, valid/invalid prediction, batch prediction, model loading)
-- **Dockerization** (Dockerfile, requirements.txt, containerized run instructions)
-- **Deployment** to a live, affordable hosting platform, with an actual deployment link
-- Revisiting the `gender` / `PaperlessBilling` drop decision with proper EDA
-- Investigating additional features that might address the "surprise churn" blind spot identified in error analysis
+- Deploy the Streamlit dashboard alongside the API (currently local-only)
+- Revisit the `gender` / `PaperlessBilling` drop decision with proper EDA
+- Investigate additional features that might address the "surprise churn" blind spot identified in error analysis
+- Tune the decision threshold and risk bands against real retention-offer cost data, if it becomes available
+- Consider upgrading past Render's free tier to eliminate cold-start delay, if this were used beyond a portfolio context
