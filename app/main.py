@@ -13,8 +13,7 @@ import io
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse
-
+from fastapi.responses import StreamingResponse, RedirectResponse
 from app.model_loader import load_default_model
 from app.predictor import ChurnPredictor, CHURN_DECISION_THRESHOLD, RISK_BANDS
 from app.schemas import (
@@ -35,6 +34,9 @@ app = FastAPI(
 model = load_default_model()
 predictor = ChurnPredictor(model)
 
+@app.get("/")
+def root():
+    return RedirectResponse(url="/docs")
 
 @app.get("/health", response_model=HealthResponse)
 def health():
